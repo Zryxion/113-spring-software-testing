@@ -4,16 +4,16 @@ const { MyClass, Student } = require('./main');
 
 
 test("Test MyClass's addStudent", () => {
-    const name = 'John'
+    const name = 'John';
     const myClass = new MyClass();
     assert.strictEqual(myClass.addStudent(name), -1);
     const student = new Student();
-    student.setName(name[0]);
+    student.setName(name);
     assert.strictEqual(myClass.addStudent(student), 0);
 });
 
 test("Test MyClass's getStudentById", () => {
-    const name = 'John'
+    const name = 'John';
     const myClass = new MyClass();
     const student = new Student();
     student.setName(name);
@@ -25,7 +25,7 @@ test("Test MyClass's getStudentById", () => {
 
 test("Test Student's setName", () => {
     const num = 10;
-    const name = 'John'
+    const name = 'John';
     const student = new Student();
     student.setName(num);
     assert.strictEqual(student.name, undefined);
@@ -35,7 +35,7 @@ test("Test Student's setName", () => {
 });
 
 test("Test Student's getName", () => {
-    const name = 'John'
+    const name = 'John';
     const student = new Student();
     assert.strictEqual(student.getName(), '');
     student.setName(name);
