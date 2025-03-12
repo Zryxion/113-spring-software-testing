@@ -2,42 +2,22 @@ const test = require('node:test');
 const assert = require('assert');
 const { MyClass, Student } = require('./main');
 
-
 test("Test MyClass's addStudent", () => {
-    const name = 'John';
-    const myClass = new MyClass();
-    assert.strictEqual(myClass.addStudent(name), -1);
-    const student = new Student();
-    student.setName(name);
-    assert.strictEqual(myClass.addStudent(student), 0);
+    // TODO
+    throw new Error("Test not implemented");
 });
 
 test("Test MyClass's getStudentById", () => {
-    const name = 'John';
-    const myClass = new MyClass();
-    const student = new Student();
-    student.setName(name);
-    const studentId = myClass.addStudent(student);
-    assert.strictEqual(myClass.getStudentById(-1), null);
-    assert.strictEqual(myClass.getStudentById(2), null);
-    assert.strictEqual(myClass.getStudentById(studentId).name, student.name);
+    // TODO
+    throw new Error("Test not implemented");
 });
 
 test("Test Student's setName", () => {
-    const num = 10;
-    const name = 'John';
-    const student = new Student();
-    student.setName(num);
-    assert.strictEqual(student.name, undefined);
-    student.setName(name);
-    assert.strictEqual(student.name, name);
-
+    // TODO
+    throw new Error("Test not implemented");
 });
 
 test("Test Student's getName", () => {
-    const name = 'John';
-    const student = new Student();
-    assert.strictEqual(student.getName(), '');
-    student.setName(name);
-    assert.strictEqual(student.getName(), name);
+    // TODO
+    throw new Error("Test not implemented");
 });
