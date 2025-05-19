@@ -4,7 +4,7 @@ import angr
 import claripy
 import sys
 
-def main():
+def main(): 
     project = angr.Project('./chal', auto_load_libs=False)
 
     input_len = 8
