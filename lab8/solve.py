@@ -5,29 +5,23 @@ import claripy
 import sys
 
 def main():
-    # Create an angr project
     project = angr.Project('./chal', auto_load_libs=False)
 
-    # Declare a symbolic input of 8 bytes (the correct input length)
     input_len = 8
     input_chars = [claripy.BVS(f'input_{i}', 8) for i in range(input_len)]
     input_expr = claripy.Concat(*input_chars)
 
-    # Set up the initial state with symbolic stdin
     state = project.factory.full_init_state(
         args=['./chal'],
         stdin=input_expr
     )
 
-    # Constrain each input character to be printable and not newline
     for char in input_chars:
         state.solver.add(char >= 0x20)
         state.solver.add(char <= 0x7e)
 
-    # Create a simulation manager
     simgr = project.factory.simulation_manager(state)
 
-    # Define what we're looking for: the success message
     def is_successful(state):
         return b'Correct! The flag is:' in state.posix.dumps(1)
 
