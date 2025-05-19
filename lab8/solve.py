@@ -1,45 +1,46 @@
 #!/usr/bin/env python3
 
 import angr
+import claripy
 import sys
 
 def main():
+    # Create an angr project
     project = angr.Project('./chal', auto_load_libs=False)
 
-    # Allocate 8 symbolic bytes for the input
+    # Declare a symbolic input of 8 bytes (the correct input length)
     input_len = 8
-    input_addr = 0x404000  # Arbitrary writable memory address
-    state = project.factory.entry_state()
+    input_chars = [claripy.BVS(f'input_{i}', 8) for i in range(input_len)]
+    input_expr = claripy.Concat(*input_chars)
 
-    # Create symbolic variables and store them in memory
-    for i in range(input_len):
-        sym_byte = state.solver.BVS(f'input_{i}', 8)
-        state.memory.store(input_addr + i, sym_byte)
-        # Constrain input to printable characters (excluding newline)
-        state.solver.add(sym_byte >= 0x20)
-        state.solver.add(sym_byte <= 0x7e)
+    # Set up the initial state with symbolic stdin
+    state = project.factory.full_init_state(
+        args=['./chal'],
+        stdin=input_expr
+    )
 
-    # Store null terminator to simulate stripped newline in fgets
-    state.memory.store(input_addr + input_len, state.solver.BVV(0, 8))
+    # Constrain each input character to be printable and not newline
+    for char in input_chars:
+        state.solver.add(char >= 0x20)
+        state.solver.add(char <= 0x7e)
 
-    # Overwrite return address of fgets so input goes where main expects
-    state.globals['input_addr'] = input_addr
-    state.regs.rdi = input_addr  # input pointer to gate(input)
+    # Create a simulation manager
+    simgr = project.factory.simulation_manager(state)
 
-    # Call gate function directly
-    gate_func = project.loader.find_symbol('gate').rebased_addr
-    simgr = project.factory.simgr(state)
-    simgr.explore(find=gate_func + 100)  # explore a bit past gate()
+    # Define what we're looking for: the success message
+    def is_successful(state):
+        return b'Correct! The flag is:' in state.posix.dumps(1)
 
-    for found in simgr.found:
-        result = b''
-        for i in range(input_len):
-            c = found.solver.eval(found.memory.load(input_addr + i, 1), cast_to=bytes)
-            result += c
-        sys.stdout.buffer.write(result + b'\n')
-        return
+    # Explore paths
+    simgr.explore(find=is_successful)
 
-    print("No solution found.")
+    if simgr.found:
+        found = simgr.found[0]
+        # Extract the concrete value of the symbolic input
+        solution = found.solver.eval(input_expr, cast_to=bytes)
+        sys.stdout.buffer.write(solution + b'\n')
+    else:
+        print("No solution found.")
 
 if __name__ == '__main__':
     main()
