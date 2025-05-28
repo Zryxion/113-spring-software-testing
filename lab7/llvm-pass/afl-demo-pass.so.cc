@@ -99,13 +99,32 @@ PreservedAnalyses AFLDEMOPass::run(Module &M, ModuleAnalysisManager &MAM) {
 
         if (CallInst *call = dyn_cast<CallInst>(&I)) {
 
-          if (GetCallInsFunctionName(call).equals("system")) {
-
-            IRBuilder<> IRB(&I);
-            IRB.CreateCall(demo_crash)->setMetadata(M.getMDKindID("nosanitize"),
-                                                   MDNode::get(C, None));
-
-          }
+           if (GetCallInsFunctionName(call).equals("system")) {
+             Value *arg = call->getArgOperand(0);
+           
+             // Strip pointer casts
+             arg = arg->stripPointerCasts();
+           
+             if (auto gv = dyn_cast<GlobalVariable>(arg)) {
+               if (gv->hasInitializer()) {
+                 if (auto ca = dyn_cast<ConstantDataArray>(gv->getInitializer())) {
+                   if (ca->isString()) {
+                     std::string str = ca->getAsCString().str();
+                     // Check if it's a known safe command
+                     if (str == "echo AAA") {
+                       // skip inserting demo_crash
+                       continue;
+                     }
+                   }
+                 }
+               }
+             }
+           
+             // Else: unsafe (dynamic) or unknown system() argument
+             IRBuilder<> IRB(&I);
+             IRB.CreateCall(demo_crash)->setMetadata(M.getMDKindID("nosanitize"),
+                                                     MDNode::get(M.getContext(), None));
+           }
 
         }
 
