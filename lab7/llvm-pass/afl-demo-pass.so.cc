@@ -1,13 +1,15 @@
 #define AFL_LLVM_PASS
 
-#include "llvm/Passes/PassPlugin.h"
-#include "llvm/IR/PassManager.h"
-#include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/Module.h"
-#include "llvm/IR/Instructions.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/IR/Metadata.h"
-#include "llvm/Support/raw_ostream.h"
+#include "config.h"
+#include "debug.h"
+
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Instructions.h>
+#include <llvm/IR/PassManager.h>
+#include <llvm/Passes/PassPlugin.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/IR/Module.h>
+#include <llvm/Support/raw_ostream.h>
 
 using namespace llvm;
 
@@ -17,29 +19,32 @@ class AFLDEMOPass : public PassInfoMixin<AFLDEMOPass> {
  public:
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
     LLVMContext &C = M.getContext();
-    FunctionCallee crashFn = M.getOrInsertFunction("__demo_crash", FunctionType::get(Type::getVoidTy(C), false));
+    Type *VoidTy = Type::getVoidTy(C);
+    FunctionCallee demo_crash = M.getOrInsertFunction("__demo_crash", VoidTy);
 
-    for (auto &F : M) {
-      for (auto &BB : F) {
-        for (auto &I : BB) {
+    for (Function &F : M) {
+      if (F.isDeclaration()) continue;
+
+      StringRef fn = F.getName();
+      if (fn.startswith("_start") || fn.startswith("__libc_csu") ||
+          fn.startswith("__afl_") || fn.startswith("__asan") ||
+          fn.startswith("asan.") || fn.startswith("llvm."))
+        continue;
+
+      for (BasicBlock &BB : F) {
+        for (Instruction &I : BB) {
           if (auto *call = dyn_cast<CallInst>(&I)) {
             Function *calledFunc = call->getCalledFunction();
             if (!calledFunc) continue;
 
             if (calledFunc->getName() == "system") {
-              // Only one arg to system()
-              if (call->arg_size() != 1) continue;
-
+              // Only consider non-constant arguments (possible user input)
               Value *arg = call->getArgOperand(0);
-              // Check if it's a constant string
-              if (isa<ConstantExpr>(arg) || isa<ConstantDataArray>(arg) || isa<Constant>(arg)) {
-                continue; // Constant string → safe
+              if (!isa<Constant>(arg)) {
+                IRBuilder<> IRB(call);
+                IRB.CreateCall(demo_crash)->setMetadata(
+                    M.getMDKindID("nosanitize"), MDNode::get(C, None));
               }
-
-              // If not constant, it's dynamic/tainted → add crash
-              IRBuilder<> IRB(call);
-              CallInst *crashCall = IRB.CreateCall(crashFn);
-              crashCall->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, {}));
             }
           }
         }
@@ -52,16 +57,15 @@ class AFLDEMOPass : public PassInfoMixin<AFLDEMOPass> {
 
 }  // namespace
 
-// Register the pass
-extern "C" ::llvm::PassPluginLibraryInfo llvmGetPassPluginInfo() {
+extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo llvmGetPassPluginInfo() {
   return {
-    LLVM_PLUGIN_API_VERSION,
-    "AFLDEMOPass",
-    "v0.1",
+    LLVM_PLUGIN_API_VERSION, "AFLDEMOPass", "v0.2",
     [](PassBuilder &PB) {
-      PB.registerOptimizerLastEPCallback(
-        [](ModulePassManager &MPM, OptimizationLevel) {
+      PB.registerPipelineParsingCallback(
+        [](StringRef, ModulePassManager &MPM,
+           ArrayRef<PassBuilder::PipelineElement>) {
           MPM.addPass(AFLDEMOPass());
+          return true;
         });
     }
   };
