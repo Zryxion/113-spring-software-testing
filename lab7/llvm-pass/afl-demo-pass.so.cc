@@ -3,154 +3,70 @@
 #include "config.h"
 #include "debug.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
-#include <sys/time.h>
-
-#include <list>
-#include <memory>
-#include <string>
-#include <fstream>
-#include <set>
-#include <iostream>
-
-#include "llvm/Config/llvm-config.h"
-#include "llvm/Pass.h"
-#include "llvm/Passes/PassPlugin.h"
-#include "llvm/Passes/PassBuilder.h"
-#include "llvm/IR/PassManager.h"
-#include "llvm/ADT/Statistic.h"
-#include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/BasicBlock.h"
-#include "llvm/IR/Module.h"
-#include "llvm/IR/DebugInfo.h"
-#include "llvm/IR/CFG.h"
-#include "llvm/IR/Verifier.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Utils/BasicBlockUtils.h"
-#include "llvm/Analysis/LoopInfo.h"
-#include "llvm/Analysis/MemorySSAUpdater.h"
-#include "llvm/Analysis/ValueTracking.h"
-#include "llvm/IR/Constants.h"
-
-#include "llvm/Passes/OptimizationLevel.h"
-
-#include "afl-llvm-common.h"
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Instructions.h>
+#include <llvm/IR/PassManager.h>
+#include <llvm/Passes/PassPlugin.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/IR/Module.h>
+#include <llvm/Support/raw_ostream.h>
 
 using namespace llvm;
 
 namespace {
 
 class AFLDEMOPass : public PassInfoMixin<AFLDEMOPass> {
-
  public:
-  AFLDEMOPass() {
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+    LLVMContext &C = M.getContext();
+    Type *VoidTy = Type::getVoidTy(C);
+    FunctionCallee demo_crash = M.getOrInsertFunction("__demo_crash", VoidTy);
 
+    for (Function &F : M) {
+      if (F.isDeclaration()) continue;
+
+      StringRef fn = F.getName();
+      if (fn.startswith("_start") || fn.startswith("__libc_csu") ||
+          fn.startswith("__afl_") || fn.startswith("__asan") ||
+          fn.startswith("asan.") || fn.startswith("llvm."))
+        continue;
+
+      for (BasicBlock &BB : F) {
+        for (Instruction &I : BB) {
+          if (auto *call = dyn_cast<CallInst>(&I)) {
+            Function *calledFunc = call->getCalledFunction();
+            if (!calledFunc) continue;
+
+            if (calledFunc->getName() == "system") {
+              // Only consider non-constant arguments (possible user input)
+              Value *arg = call->getArgOperand(0);
+              if (!isa<Constant>(arg)) {
+                IRBuilder<> IRB(call);
+                IRB.CreateCall(demo_crash)->setMetadata(
+                    M.getMDKindID("nosanitize"), MDNode::get(C, None));
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return PreservedAnalyses::all();
   }
-
-  PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM);
-  llvm::StringRef   GetCallInsFunctionName(CallInst *call);
-
- protected:
-
 };
 
 }  // namespace
 
-extern "C" ::llvm::PassPluginLibraryInfo LLVM_ATTRIBUTE_WEAK
-llvmGetPassPluginInfo() {
-
+extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo llvmGetPassPluginInfo() {
   return {
-
-      LLVM_PLUGIN_API_VERSION, "AFLDEMOPass", "v0.1", [](PassBuilder &PB) {
-
-        PB.registerOptimizerLastEPCallback(
-            [](ModulePassManager &MPM, OptimizationLevel OL) {
-
-              MPM.addPass(AFLDEMOPass());
-
-            });
-
-      }};
-
-}
-
-PreservedAnalyses AFLDEMOPass::run(Module &M, ModuleAnalysisManager &MAM) {
-
-  LLVMContext &  C = M.getContext();
-  Type *         VoidTy = Type::getVoidTy(C);
-  FunctionCallee demo_crash = M.getOrInsertFunction("__demo_crash", VoidTy);
-
-  for (auto &F : M) {
-
-    llvm::StringRef fn = F.getName();
-
-    if (fn.equals("_start") || fn.startswith("__libc_csu") ||
-        fn.startswith("__afl_") || fn.startswith("__asan") ||
-        fn.startswith("asan.") || fn.startswith("llvm."))
-      continue;
-
-    for (auto &BB : F) {
-
-      for (auto &I : BB) {
-
-        if (CallInst *call = dyn_cast<CallInst>(&I)) {
-
-           if (GetCallInsFunctionName(call).equals("system")) {
-             Value *arg = call->getArgOperand(0);
-           
-             // Strip pointer casts
-             arg = arg->stripPointerCasts();
-           
-             if (auto gv = dyn_cast<GlobalVariable>(arg)) {
-               if (gv->hasInitializer()) {
-                 if (auto ca = dyn_cast<ConstantDataArray>(gv->getInitializer())) {
-                   if (ca->isString()) {
-                     std::string str = ca->getAsCString().str();
-                     // Check if it's a known safe command
-                     if (str == "echo AAA") {
-                       // skip inserting demo_crash
-                       continue;
-                     }
-                   }
-                 }
-               }
-             }
-           
-             // Else: unsafe (dynamic) or unknown system() argument
-             IRBuilder<> IRB(&I);
-             IRB.CreateCall(demo_crash)->setMetadata(M.getMDKindID("nosanitize"),
-                                                     MDNode::get(M.getContext(), None));
-           }
-
-        }
-
-      }
-
+    LLVM_PLUGIN_API_VERSION, "AFLDEMOPass", "v0.2",
+    [](PassBuilder &PB) {
+      PB.registerPipelineParsingCallback(
+        [](StringRef, ModulePassManager &MPM,
+           ArrayRef<PassBuilder::PipelineElement>) {
+          MPM.addPass(AFLDEMOPass());
+          return true;
+        });
     }
-
-  }
-
-  return PreservedAnalyses::all();
-
+  };
 }
-
-llvm::StringRef AFLDEMOPass::GetCallInsFunctionName(CallInst *call) {
-
-  if (Function *func = call->getCalledFunction()) {
-
-    return func->getName();
-
-  } else {
-
-    // Indirect call
-    return dyn_cast<Function>(call->getCalledOperand()->stripPointerCasts())
-        ->getName();
-
-  }
-
-}
-
