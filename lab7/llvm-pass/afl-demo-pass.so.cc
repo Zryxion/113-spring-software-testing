@@ -1,55 +1,67 @@
+#define AFL_LLVM_PASS
+
+#include "llvm/IR/PassManager.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/LegacyPassManager.h"
-#include "llvm/IR/Module.h"
-#include "llvm/Pass.h"
-#include "llvm/Support/raw_ostream.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/PassPlugin.h"
 
 using namespace llvm;
 
 namespace {
-struct AFLDemoPass : public ModulePass {
-  static char ID;
-  AFLDemoPass() : ModulePass(ID) {}
 
-  bool runOnModule(Module &M) override {
+class AFLDEMOPass : public PassInfoMixin<AFLDEMOPass> {
+public:
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
     LLVMContext &C = M.getContext();
+    Type *VoidTy = Type::getVoidTy(C);
+    FunctionCallee demo_crash = M.getOrInsertFunction("__demo_crash", VoidTy);
 
-    // Declare or insert the __demo_crash function
-    FunctionCallee demoCrashFunc = M.getOrInsertFunction(
-        "__demo_crash", FunctionType::get(Type::getVoidTy(C), false));
-
-    for (auto &F : M) {
-      for (auto &BB : F) {
-        for (auto &I : BB) {
-          if (auto *call = dyn_cast<CallInst>(&I)) {
-            Function *calledFunc = call->getCalledFunction();
+    for (Function &F : M) {
+      for (BasicBlock &BB : F) {
+        for (Instruction &I : BB) {
+          if (auto *CI = dyn_cast<CallInst>(&I)) {
+            Function *calledFunc = CI->getCalledFunction();
             if (!calledFunc) continue;
-            if (calledFunc->getName() != "system") continue;
-
-            Value *arg = call->getArgOperand(0)->stripPointerCasts();
-
-            // Skip constant global strings like system("echo AAA")
-            if (auto *gv = dyn_cast<GlobalVariable>(arg)) {
-              if (gv->hasInitializer()) {
-                if (isa<ConstantDataArray>(gv->getInitializer())) {
-                  continue; // This is a safe, constant string.
+            if (calledFunc->getName() == "system") {
+              Value *arg = CI->getArgOperand(0);
+              
+              // Strip any pointer casts
+              arg = arg->stripPointerCasts();
+            
+              // Skip instrumentation for direct constant global strings
+              if (isa<GlobalVariable>(arg)) {
+                GlobalVariable *GV = cast<GlobalVariable>(arg);
+                if (GV->hasInitializer()) {
+                  if (isa<ConstantDataArray>(GV->getInitializer())) {
+                    continue; // skip constant system("echo AAA")
+                  }
                 }
               }
+            
+              // If it's not a constant string, treat it as potential injection
+              IRBuilder<> IRB(CI);
+              IRB.CreateCall(demo_crash);
             }
-
-            // Not a constant -> likely user-controlled -> potential injection
-            IRBuilder<> IRB(call);
-            IRB.CreateCall(demoCrashFunc);
           }
         }
       }
     }
-
-    return true;
+    return PreservedAnalyses::none();
   }
 };
-}
 
-char AFLDemoPass::ID = 0;
-static RegisterPass<AFLDemoPass> X("afl_demo_pass", "AFL++ Demo Pass", false, false);
+} // namespace
+
+extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo llvmGetPassPluginInfo() {
+  return {
+    LLVM_PLUGIN_API_VERSION, "AFLDEMOPass", "v0.1",
+    [](PassBuilder &PB) {
+      PB.registerPipelineParsingCallback(
+        [](StringRef, ModulePassManager &MPM, ArrayRef<PassBuilder::PipelineElement>) {
+          MPM.addPass(AFLDEMOPass());
+          return true;
+        });
+    }
+  };
+}
