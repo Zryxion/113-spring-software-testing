@@ -1,50 +1,68 @@
 #define AFL_LLVM_PASS
 
-#include "llvm/IR/Function.h"
-#include "llvm/IR/Instructions.h"
+#include "llvm/Passes/PassPlugin.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Pass.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 
 namespace {
 
-struct AFLDemoLegacyPass : public ModulePass {
-  static char ID;
-  AFLDemoLegacyPass() : ModulePass(ID) {}
-
-  bool runOnModule(Module &M) override {
+class AFLDEMOPass : public PassInfoMixin<AFLDEMOPass> {
+ public:
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
     LLVMContext &C = M.getContext();
-    Type *VoidTy = Type::getVoidTy(C);
+    FunctionCallee crashFn = M.getOrInsertFunction("__demo_crash", FunctionType::get(Type::getVoidTy(C), false));
 
-    FunctionCallee demo_crash = M.getOrInsertFunction("__demo_crash", VoidTy);
+    for (auto &F : M) {
+      for (auto &BB : F) {
+        for (auto &I : BB) {
+          if (auto *call = dyn_cast<CallInst>(&I)) {
+            Function *calledFunc = call->getCalledFunction();
+            if (!calledFunc) continue;
 
-    for (Function &F : M) {
-      for (BasicBlock &BB : F) {
-        for (auto it = BB.begin(); it != BB.end(); ++it) {
-          if (auto *call = dyn_cast<CallInst>(&*it)) {
-            Function *callee = call->getCalledFunction();
-            if (!callee) continue;
+            if (calledFunc->getName() == "system") {
+              // Only one arg to system()
+              if (call->arg_size() != 1) continue;
 
-            if (callee->getName() == "system") {
               Value *arg = call->getArgOperand(0);
-              if (!isa<ConstantDataArray>(arg->stripPointerCasts())) {
-                IRBuilder<> IRB(call);
-                IRB.CreateCall(demo_crash);
+              // Check if it's a constant string
+              if (isa<ConstantExpr>(arg) || isa<ConstantDataArray>(arg) || isa<Constant>(arg)) {
+                continue; // Constant string → safe
               }
+
+              // If not constant, it's dynamic/tainted → add crash
+              IRBuilder<> IRB(call);
+              CallInst *crashCall = IRB.CreateCall(crashFn);
+              crashCall->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, {}));
             }
           }
         }
       }
     }
 
-    return true;
+    return PreservedAnalyses::all();
   }
 };
 
-char AFLDemoLegacyPass::ID = 0;
-static RegisterPass<AFLDemoLegacyPass> X("afl-demo-pass", "AFL++ Demo Legacy Pass");
+}  // namespace
 
-} // namespace
+// Register the pass
+extern "C" ::llvm::PassPluginLibraryInfo llvmGetPassPluginInfo() {
+  return {
+    LLVM_PLUGIN_API_VERSION,
+    "AFLDEMOPass",
+    "v0.1",
+    [](PassBuilder &PB) {
+      PB.registerOptimizerLastEPCallback(
+        [](ModulePassManager &MPM, OptimizationLevel) {
+          MPM.addPass(AFLDEMOPass());
+        });
+    }
+  };
+}
